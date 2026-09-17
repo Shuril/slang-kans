@@ -1,0 +1,84 @@
+/**
+ * ==============================================================================
+ *  JACOBI.SLANG - Orthogonal Jacobi Polynomial KAN Kernel with Autodiff
+ * ==============================================================================
+ *  General orthogonal polynomials on [-1, 1] parameterized by (alpha, beta).
+ *  Special cases include Legendre (0, 0) and Chebyshev (-0.5, -0.5).
+ * ==============================================================================
+ */
+
+module jacobi;
+
+[Differentiable]
+public void compute_jacobi_bases(float x, int degree, float alpha, float beta, out float bases[16])
+{
+    float xc = clamp(x, -1.0f, 1.0f);
+    bases[0] = 1.0f;
+
+    if (degree > 1)
+    {
+        bases[1] = 0.5f * (alpha - beta + (alpha + beta + 2.0f) * xc);
+        float a_b = alpha + beta;
+
+        [unroll]
+        for (int n = 2; n < 16; n++)
+        {
+            if (n < degree)
+            {
+                float fn = (float)n;
+                float an = 2.0f * fn * (fn + a_b) * (2.0f * fn + a_b - 2.0f);
+                float bn_term1 = (2.0f * fn + a_b - 1.0f) * (2.0f * fn + a_b) * (2.0f * fn + a_b - 2.0f);
+                float bn_term2 = (2.0f * fn + a_b - 1.0f) * (alpha * alpha - beta * beta);
+                float bn = bn_term1 * xc + bn_term2;
+                float cn = 2.0f * (fn + alpha - 1.0f) * (fn + beta - 1.0f) * (2.0f * fn + a_b);
+
+                bases[n] = (bn * bases[n - 1] - cn * bases[n - 2]) / an;
+            }
+            else
+            {
+                bases[n] = 0.0f;
+            }
+        }
+    }
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void jacobi_kan_forward(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> output,     // [B, D_out]
+    uniform StructuredBuffer<float> input,       // [B, D_in]
+    uniform StructuredBuffer<float> weights,     // [D_in, D_out, degree]
+    uniform StructuredBuffer<float> bias,        // [D_out]
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int out_features,
+    uniform int degree,
+    uniform float alpha,
+    uniform float beta
+)
+{
+    uint b = threadId.x;
+    uint j = threadId.y;
+
+    if (b >= (uint)batch_size || j >= (uint)out_features)
+        return;
+
+    float acc = bias[j];
+
+    for (int i = 0; i < in_features; i++)
+    {
+        float x_val = input[b * in_features + i];
+        int w_base = (i * out_features + (int)j) * degree;
+
+        float bases[16];
+        compute_jacobi_bases(x_val, degree, alpha, beta, bases);
+
+        for (int d = 0; d < degree; d++)
+        {
+            acc += bases[d] * weights[w_base + d];
+        }
+    }
+
+    output[b * out_features + j] = acc;
+}
