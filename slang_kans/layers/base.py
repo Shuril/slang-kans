@@ -3,7 +3,8 @@ Base Layer for slang-KANs Architectures.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Union, Any
+from typing import Optional, Tuple, Union, Any, Dict
+import time
 import numpy as np
 from slang_kans.device import get_device, SlangDeviceManager
 
@@ -28,10 +29,41 @@ class SlangKANLayerBase(ABC):
         if self.use_bias:
             self.bias = np.zeros(out_features, dtype=np.float32)
 
+        self._buffer_pool: Dict[str, Any] = {}
+
+    def _get_buffer(self, name: str, size_bytes: int, usage: int):
+        dev = self.mgr.device
+        if dev is None:
+            return None
+        buf = self._buffer_pool.get(name)
+        if buf is None or buf.size < size_bytes:
+            alloc_size = max(size_bytes, 1024 * 64 * 4)
+            buf = dev.create_buffer(size=alloc_size, usage=usage)
+            self._buffer_pool[name] = buf
+        return buf
+
     @abstractmethod
     def forward(self, x: np.ndarray) -> np.ndarray:
         """Executes forward pass across batch inputs."""
         pass
+
+    def benchmark(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        """Benchmarks forward execution in milliseconds on GPU."""
+        dev = self.mgr.device
+        if dev is None or not self.mgr.is_gpu_available():
+            raise RuntimeError("GPU device not available for slang benchmark.")
+
+        for _ in range(warmup):
+            self.forward(x)
+        dev.wait_for_idle()
+
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            self.forward(x)
+        dev.wait_for_idle()
+        t1 = time.perf_counter()
+
+        return ((t1 - t0) / iters) * 1000.0
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return self.forward(x)

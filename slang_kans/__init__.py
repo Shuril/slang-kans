@@ -11,6 +11,8 @@ from slang_kans.device import (
     SlangDeviceManager
 )
 
+__version__ = "0.1.1"
+
 from slang_kans.layers import (
     # Core B-Spline KAN
     KAN,

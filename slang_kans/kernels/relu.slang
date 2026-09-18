@@ -16,7 +16,7 @@ public float relu_tent_basis(float x, float center, float inv_h)
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(16, 4, 1)]
 public void relu_kan_forward(
     uint3 threadId : SV_DispatchThreadID,
     uniform RWStructuredBuffer<float> output,     // [B, D_out]
@@ -32,27 +32,52 @@ public void relu_kan_forward(
 )
 {
     uint b = threadId.x;
-    uint j = threadId.y;
+    uint j_base = threadId.y * 4;
 
-    if (b >= (uint)batch_size || j >= (uint)out_features)
+    if (b >= (uint)batch_size)
         return;
 
-    float acc = bias[j];
+    float acc0 = (j_base + 0 < (uint)out_features) ? bias[j_base + 0] : 0.0f;
+    float acc1 = (j_base + 1 < (uint)out_features) ? bias[j_base + 1] : 0.0f;
+    float acc2 = (j_base + 2 < (uint)out_features) ? bias[j_base + 2] : 0.0f;
+    float acc3 = (j_base + 3 < (uint)out_features) ? bias[j_base + 3] : 0.0f;
+
     float h = (grid_max - grid_min) / max((float)(num_grids - 1), 1.0f);
     float inv_h = 1.0f / max(h, 1e-6f);
 
     for (int i = 0; i < in_features; i++)
     {
         float x_val = input[b * in_features + i];
-        int w_base = (i * out_features + (int)j) * num_grids;
+
+        float basis_val[16];
+        for (int c = 0; c < 16; c++) basis_val[c] = 0.0f;
 
         for (int c = 0; c < num_grids; c++)
         {
             float center = grid_min + (float)c * h;
-            float basis_val = relu_tent_basis(x_val, center, inv_h);
-            acc += basis_val * weights[w_base + c];
+            basis_val[c] = relu_tent_basis(x_val, center, inv_h);
+        }
+
+        if (j_base + 0 < (uint)out_features) {
+            int w0 = (i * out_features + (int)j_base + 0) * num_grids;
+            for (int c = 0; c < num_grids; c++) acc0 += basis_val[c] * weights[w0 + c];
+        }
+        if (j_base + 1 < (uint)out_features) {
+            int w1 = (i * out_features + (int)j_base + 1) * num_grids;
+            for (int c = 0; c < num_grids; c++) acc1 += basis_val[c] * weights[w1 + c];
+        }
+        if (j_base + 2 < (uint)out_features) {
+            int w2 = (i * out_features + (int)j_base + 2) * num_grids;
+            for (int c = 0; c < num_grids; c++) acc2 += basis_val[c] * weights[w2 + c];
+        }
+        if (j_base + 3 < (uint)out_features) {
+            int w3 = (i * out_features + (int)j_base + 3) * num_grids;
+            for (int c = 0; c < num_grids; c++) acc3 += basis_val[c] * weights[w3 + c];
         }
     }
 
-    output[b * out_features + j] = acc;
+    if (j_base + 0 < (uint)out_features) output[b * out_features + j_base + 0] = acc0;
+    if (j_base + 1 < (uint)out_features) output[b * out_features + j_base + 1] = acc1;
+    if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
+    if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }

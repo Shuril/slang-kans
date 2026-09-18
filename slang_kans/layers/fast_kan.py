@@ -63,15 +63,13 @@ class FastKANLinear(SlangKANLayerBase):
             if self._buf_w is None or self._kernel is None:
                 self._sync_gpu_weights()
 
-            buf_x = dev.create_buffer(data=x_arr, usage=slangpy.BufferUsage.shader_resource)
-            out_arr = np.zeros((B, D_out), dtype=np.float32)
-            buf_out = dev.create_buffer(
-                data=out_arr,
-                usage=slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access
-            )
+            buf_x = self._get_buffer("x", B * D_in * 4, slangpy.BufferUsage.shader_resource)
+            buf_x.copy_from_numpy(x_arr)
+
+            buf_out = self._get_buffer("out", B * D_out * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
 
             self._kernel.dispatch(
-                thread_count=[B, D_out, 1],
+                thread_count=[B, (D_out + 3) // 4, 1],
                 output=buf_out,
                 input=buf_x,
                 weights=self._buf_w,
@@ -84,7 +82,7 @@ class FastKANLinear(SlangKANLayerBase):
                 grid_max=float(self.grid_max)
             )
             dev.wait_for_idle()
-            out = buf_out.to_numpy().view(np.float32).reshape(B, D_out)
+            out = buf_out.to_numpy().view(np.float32)[:B * D_out].reshape(B, D_out)
             return out[0] if is_1d else out
 
         diff = (x_arr[..., None] - self.centers[None, None, :]) * self.inv_sigma

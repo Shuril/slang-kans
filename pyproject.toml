@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slang-kans"
-version = "0.1.0"
+version = "0.1.1"
 description = "slang-KANs: High-Performance Cross-Platform Kolmogorov-Arnold Networks in Slang (CUDA, Metal, Vulkan, CPU)"
 readme = "README.md"
 requires-python = ">=3.9"

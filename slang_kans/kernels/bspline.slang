@@ -23,7 +23,7 @@ public void compute_cubic_bspline_4(float u, out float b[4])
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(16, 4, 1)]
 public void bspline_kan_forward(
     uint3 threadId : SV_DispatchThreadID,
     uniform RWStructuredBuffer<float> output,
@@ -39,13 +39,18 @@ public void bspline_kan_forward(
 )
 {
     uint b_idx = threadId.x;
-    uint j = threadId.y;
+    uint j_base = threadId.y * 4;
 
-    if (b_idx >= (uint)batch_size || j >= (uint)out_features)
+    if (b_idx >= (uint)batch_size)
         return;
 
-    float acc = bias[j];
+    float acc0 = (j_base + 0 < (uint)out_features) ? bias[j_base + 0] : 0.0f;
+    float acc1 = (j_base + 1 < (uint)out_features) ? bias[j_base + 1] : 0.0f;
+    float acc2 = (j_base + 2 < (uint)out_features) ? bias[j_base + 2] : 0.0f;
+    float acc3 = (j_base + 3 < (uint)out_features) ? bias[j_base + 3] : 0.0f;
+
     float span = max(grid_max - grid_min, 1e-6f);
+    int weight_stride = grid_size + 3;
 
     for (int i = 0; i < in_features; i++)
     {
@@ -58,15 +63,26 @@ public void bspline_kan_forward(
         float bases[4];
         compute_cubic_bspline_4(u, bases);
 
-        int weight_stride = grid_size + 3;
-        int w_base = (i * out_features + (int)j) * weight_stride + interval;
-
-        [unroll]
-        for (int k = 0; k < 4; k++)
-        {
-            acc += bases[k] * weights[w_base + k];
+        if (j_base + 0 < (uint)out_features) {
+            int wb = (i * out_features + (int)j_base + 0) * weight_stride + interval;
+            [unroll] for (int k = 0; k < 4; k++) acc0 += bases[k] * weights[wb + k];
+        }
+        if (j_base + 1 < (uint)out_features) {
+            int wb = (i * out_features + (int)j_base + 1) * weight_stride + interval;
+            [unroll] for (int k = 0; k < 4; k++) acc1 += bases[k] * weights[wb + k];
+        }
+        if (j_base + 2 < (uint)out_features) {
+            int wb = (i * out_features + (int)j_base + 2) * weight_stride + interval;
+            [unroll] for (int k = 0; k < 4; k++) acc2 += bases[k] * weights[wb + k];
+        }
+        if (j_base + 3 < (uint)out_features) {
+            int wb = (i * out_features + (int)j_base + 3) * weight_stride + interval;
+            [unroll] for (int k = 0; k < 4; k++) acc3 += bases[k] * weights[wb + k];
         }
     }
 
-    output[b_idx * out_features + j] = acc;
+    if (j_base + 0 < (uint)out_features) output[b_idx * out_features + j_base + 0] = acc0;
+    if (j_base + 1 < (uint)out_features) output[b_idx * out_features + j_base + 1] = acc1;
+    if (j_base + 2 < (uint)out_features) output[b_idx * out_features + j_base + 2] = acc2;
+    if (j_base + 3 < (uint)out_features) output[b_idx * out_features + j_base + 3] = acc3;
 }

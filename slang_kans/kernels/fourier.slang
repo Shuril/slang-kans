@@ -11,7 +11,7 @@ module fourier;
 static const float PI = 3.14159265358979323846f;
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(16, 4, 1)]
 public void fourier_kan_forward(
     uint3 threadId : SV_DispatchThreadID,
     uniform RWStructuredBuffer<float> output,     // [B, D_out]
@@ -25,33 +25,53 @@ public void fourier_kan_forward(
 )
 {
     uint b = threadId.x;
-    uint j = threadId.y;
+    uint j_base = threadId.y * 4;
 
-    if (b >= (uint)batch_size || j >= (uint)out_features)
+    if (b >= (uint)batch_size)
         return;
 
-    float acc = bias[j];
+    float acc0 = (j_base + 0 < (uint)out_features) ? bias[j_base + 0] : 0.0f;
+    float acc1 = (j_base + 1 < (uint)out_features) ? bias[j_base + 1] : 0.0f;
+    float acc2 = (j_base + 2 < (uint)out_features) ? bias[j_base + 2] : 0.0f;
+    float acc3 = (j_base + 3 < (uint)out_features) ? bias[j_base + 3] : 0.0f;
+
     int num_bases = 2 * num_frequencies + 1;
 
     for (int i = 0; i < in_features; i++)
     {
         float x_val = input[b * in_features + i];
-        int w_base = (i * out_features + (int)j) * num_bases;
 
-        // Constant term (basis 0)
-        acc += 1.0f * weights[w_base + 0];
-
-        // Harmonic terms
-        for (int k = 1; k <= num_frequencies; k++)
+        float cos_terms[16];
+        float sin_terms[16];
+        for (int k = 1; k <= num_frequencies && k < 16; k++)
         {
             float arg = (float)k * PI * x_val;
-            float cos_term = cos(arg);
-            float sin_term = sin(arg);
+            cos_terms[k] = cos(arg);
+            sin_terms[k] = sin(arg);
+        }
 
-            acc += cos_term * weights[w_base + k];
-            acc += sin_term * weights[w_base + num_frequencies + k];
+        for (int sub = 0; sub < 4; sub++)
+        {
+            uint j = j_base + (uint)sub;
+            if (j < (uint)out_features)
+            {
+                int w_base = (i * out_features + (int)j) * num_bases;
+                float val = weights[w_base + 0];
+                for (int k = 1; k <= num_frequencies && k < 16; k++)
+                {
+                    val += cos_terms[k] * weights[w_base + k];
+                    val += sin_terms[k] * weights[w_base + num_frequencies + k];
+                }
+                if (sub == 0) acc0 += val;
+                else if (sub == 1) acc1 += val;
+                else if (sub == 2) acc2 += val;
+                else acc3 += val;
+            }
         }
     }
 
-    output[b * out_features + j] = acc;
+    if (j_base + 0 < (uint)out_features) output[b * out_features + j_base + 0] = acc0;
+    if (j_base + 1 < (uint)out_features) output[b * out_features + j_base + 1] = acc1;
+    if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
+    if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }

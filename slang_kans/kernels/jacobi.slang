@@ -43,7 +43,7 @@ public void compute_jacobi_bases(float x, int degree, float alpha, float beta, o
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(16, 4, 1)]
 public void jacobi_kan_forward(
     uint3 threadId : SV_DispatchThreadID,
     uniform RWStructuredBuffer<float> output,     // [B, D_out]
@@ -59,26 +59,43 @@ public void jacobi_kan_forward(
 )
 {
     uint b = threadId.x;
-    uint j = threadId.y;
+    uint j_base = threadId.y * 4;
 
-    if (b >= (uint)batch_size || j >= (uint)out_features)
+    if (b >= (uint)batch_size)
         return;
 
-    float acc = bias[j];
+    float acc0 = (j_base + 0 < (uint)out_features) ? bias[j_base + 0] : 0.0f;
+    float acc1 = (j_base + 1 < (uint)out_features) ? bias[j_base + 1] : 0.0f;
+    float acc2 = (j_base + 2 < (uint)out_features) ? bias[j_base + 2] : 0.0f;
+    float acc3 = (j_base + 3 < (uint)out_features) ? bias[j_base + 3] : 0.0f;
 
     for (int i = 0; i < in_features; i++)
     {
         float x_val = input[b * in_features + i];
-        int w_base = (i * out_features + (int)j) * degree;
 
         float bases[16];
         compute_jacobi_bases(x_val, degree, alpha, beta, bases);
 
-        for (int d = 0; d < degree; d++)
-        {
-            acc += bases[d] * weights[w_base + d];
+        if (j_base + 0 < (uint)out_features) {
+            int w0 = (i * out_features + (int)j_base + 0) * degree;
+            for (int d = 0; d < degree; d++) acc0 += bases[d] * weights[w0 + d];
+        }
+        if (j_base + 1 < (uint)out_features) {
+            int w1 = (i * out_features + (int)j_base + 1) * degree;
+            for (int d = 0; d < degree; d++) acc1 += bases[d] * weights[w1 + d];
+        }
+        if (j_base + 2 < (uint)out_features) {
+            int w2 = (i * out_features + (int)j_base + 2) * degree;
+            for (int d = 0; d < degree; d++) acc2 += bases[d] * weights[w2 + d];
+        }
+        if (j_base + 3 < (uint)out_features) {
+            int w3 = (i * out_features + (int)j_base + 3) * degree;
+            for (int d = 0; d < degree; d++) acc3 += bases[d] * weights[w3 + d];
         }
     }
 
-    output[b * out_features + j] = acc;
+    if (j_base + 0 < (uint)out_features) output[b * out_features + j_base + 0] = acc0;
+    if (j_base + 1 < (uint)out_features) output[b * out_features + j_base + 1] = acc1;
+    if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
+    if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
