@@ -36,7 +36,10 @@ class JacobiKANLinear(SlangKANLayerBase):
 
         # GPU cached buffers and kernel
         self._kernel = None
+        self._kernel_basis = None
+        self._kernel_gemm = None
         self._buf_w = None
+        self._buf_w_gemm = None
         self._buf_b = None
 
     def _sync_gpu_weights(self):
@@ -45,7 +48,13 @@ class JacobiKANLinear(SlangKANLayerBase):
             return
         if self._kernel is None:
             self._kernel = self.mgr.get_or_compile_kernel("jacobi", "jacobi_kan_forward")
+            self._kernel_basis = self.mgr.get_or_compile_kernel("jacobi", "eval_jacobi_basis")
+            self._kernel_gemm = self.mgr.get_or_compile_kernel("gemm", "gemm_tiled")
+
         self._buf_w = dev.create_buffer(data=self.weights, usage=slangpy.BufferUsage.shader_resource)
+        w_mat = np.ascontiguousarray(self.weights.transpose(1, 0, 2).reshape(self.out_features, -1))
+        self._buf_w_gemm = dev.create_buffer(data=w_mat, usage=slangpy.BufferUsage.shader_resource)
+
         bias_arr = self.bias if (self.use_bias and self.bias is not None) else np.zeros(self.out_features, dtype=np.float32)
         self._buf_b = dev.create_buffer(data=bias_arr, usage=slangpy.BufferUsage.shader_resource)
 
@@ -70,19 +79,44 @@ class JacobiKANLinear(SlangKANLayerBase):
 
             buf_out = self._get_buffer("out", B * D_out * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
 
-            self._kernel.dispatch(
-                thread_count=[B, (D_out + 3) // 4, 1],
-                output=buf_out,
-                input=buf_x,
-                weights=self._buf_w,
-                bias=self._buf_b,
-                batch_size=B,
-                in_features=D_in,
-                out_features=D_out,
-                degree=deg,
-                alpha=self.alpha,
-                beta=self.beta
-            )
+            if B >= 64:
+                K_dim = D_in * deg
+                buf_phi = self._get_buffer("phi", B * K_dim * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
+                self._kernel_basis.dispatch(
+                    thread_count=[B, D_in, 1],
+                    phi=buf_phi,
+                    input=buf_x,
+                    batch_size=B,
+                    in_features=D_in,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
+                self._kernel_gemm.dispatch(
+                    thread_count=[(D_out + 15) // 16 * 16, (B + 15) // 16 * 16, 1],
+                    C=buf_out,
+                    A=buf_phi,
+                    B_mat=self._buf_w_gemm,
+                    bias=self._buf_b,
+                    M=B,
+                    N=D_out,
+                    K=K_dim,
+                    has_bias=1 if self.use_bias else 0
+                )
+            else:
+                self._kernel.dispatch(
+                    thread_count=[B, (D_out + 3) // 4, 1],
+                    output=buf_out,
+                    input=buf_x,
+                    weights=self._buf_w,
+                    bias=self._buf_b,
+                    batch_size=B,
+                    in_features=D_in,
+                    out_features=D_out,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
             dev.wait_for_idle()
             out = buf_out.to_numpy().view(np.float32)[:B * D_out].reshape(B, D_out)
             return out[0] if is_1d else out
@@ -110,6 +144,121 @@ class JacobiKANLinear(SlangKANLayerBase):
             out += self.bias[None, :]
 
         return out[0] if is_1d else out
+
+    def _benchmark_gpu(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        dev = self.mgr.device
+        x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float32))
+        if x_arr.ndim == 1:
+            x_arr = x_arr.reshape(1, -1)
+        B, D_in = x_arr.shape
+        D_out = self.out_features
+        deg = self.degree
+
+        if self._buf_w is None or self._kernel is None:
+            self._sync_gpu_weights()
+
+        buf_x = self._get_buffer("x", B * D_in * 4, slangpy.BufferUsage.shader_resource)
+        buf_x.copy_from_numpy(x_arr)
+        buf_out = self._get_buffer("out", B * D_out * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
+
+        use_gemm = (B >= 64)
+        if use_gemm:
+            K_dim = D_in * deg
+            buf_phi = self._get_buffer("phi", B * K_dim * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
+
+        for _ in range(warmup):
+            if use_gemm:
+                self._kernel_basis.dispatch(
+                    thread_count=[B, D_in, 1],
+                    phi=buf_phi,
+                    input=buf_x,
+                    batch_size=B,
+                    in_features=D_in,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
+                self._kernel_gemm.dispatch(
+                    thread_count=[(D_out + 15) // 16 * 16, (B + 15) // 16 * 16, 1],
+                    C=buf_out,
+                    A=buf_phi,
+                    B_mat=self._buf_w_gemm,
+                    bias=self._buf_b,
+                    M=B,
+                    N=D_out,
+                    K=K_dim,
+                    has_bias=1 if self.use_bias else 0
+                )
+            else:
+                self._kernel.dispatch(
+                    thread_count=[B, (D_out + 3) // 4, 1],
+                    output=buf_out,
+                    input=buf_x,
+                    weights=self._buf_w,
+                    bias=self._buf_b,
+                    batch_size=B,
+                    in_features=D_in,
+                    out_features=D_out,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
+        dev.wait_for_idle()
+
+        import time
+        start = time.perf_counter()
+        for _ in range(iters):
+            if use_gemm:
+                self._kernel_basis.dispatch(
+                    thread_count=[B, D_in, 1],
+                    phi=buf_phi,
+                    input=buf_x,
+                    batch_size=B,
+                    in_features=D_in,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
+                self._kernel_gemm.dispatch(
+                    thread_count=[(D_out + 15) // 16 * 16, (B + 15) // 16 * 16, 1],
+                    C=buf_out,
+                    A=buf_phi,
+                    B_mat=self._buf_w_gemm,
+                    bias=self._buf_b,
+                    M=B,
+                    N=D_out,
+                    K=K_dim,
+                    has_bias=1 if self.use_bias else 0
+                )
+            else:
+                self._kernel.dispatch(
+                    thread_count=[B, (D_out + 3) // 4, 1],
+                    output=buf_out,
+                    input=buf_x,
+                    weights=self._buf_w,
+                    bias=self._buf_b,
+                    batch_size=B,
+                    in_features=D_in,
+                    out_features=D_out,
+                    degree=deg,
+                    alpha=self.alpha,
+                    beta=self.beta
+                )
+        dev.wait_for_idle()
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
+
+    def benchmark(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        if self.use_gpu and self.mgr.is_gpu_available():
+            return self._benchmark_gpu(x, warmup, iters)
+        import time
+        for _ in range(warmup):
+            self.forward(x)
+        start = time.perf_counter()
+        for _ in range(iters):
+            self.forward(x)
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
 
     def regularization_loss(self, regularize_activation: float = 1.0, regularize_entropy: float = 1.0) -> float:
         l1 = np.mean(np.abs(self.weights), axis=-1)

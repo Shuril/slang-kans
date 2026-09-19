@@ -80,3 +80,30 @@ public void fast_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b_idx * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b_idx * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_rbf_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int num_centers,
+    uniform float grid_min,
+    uniform float grid_max
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x = input[b * in_features + din];
+    float step = (grid_max - grid_min) / max((float)(num_centers - 1), 1.0f);
+    float inv_sigma = 1.0f / max(step * 1.5f, 1e-6f);
+    uint out_offset = b * (in_features * num_centers) + din * num_centers;
+    for (int c = 0; c < num_centers; c++) {
+        float center = grid_min + (float)c * step;
+        float d = (x - center) * inv_sigma;
+        phi[out_offset + c] = exp(-d * d);
+    }
+}
+

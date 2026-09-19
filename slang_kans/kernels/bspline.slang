@@ -86,3 +86,40 @@ public void bspline_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b_idx * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b_idx * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_bspline_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int grid_size,
+    uniform float grid_min,
+    uniform float grid_max
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x_raw = input[b * in_features + din];
+    int num_bases = grid_size + 3;
+    uint out_offset = b * (in_features * num_bases) + din * num_bases;
+
+    for (int k = 0; k < num_bases; k++) {
+        phi[out_offset + k] = 0.0f;
+    }
+
+    float span = max(grid_max - grid_min, 1e-6f);
+    float t = (clamp(x_raw, grid_min, grid_max) - grid_min) / span * (float)grid_size;
+    int interval = clamp((int)floor(t), 0, grid_size - 1);
+    float u = t - (float)interval;
+
+    float b_val[4];
+    compute_cubic_bspline_4(u, b_val);
+
+    phi[out_offset + interval + 0] = b_val[0];
+    phi[out_offset + interval + 1] = b_val[1];
+    phi[out_offset + interval + 2] = b_val[2];
+    phi[out_offset + interval + 3] = b_val[3];
+}

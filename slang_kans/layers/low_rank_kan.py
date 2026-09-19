@@ -66,6 +66,16 @@ class LowRankKANLinear(SlangKANLayerBase):
 
         return out[0] if is_1d else out
 
+    def benchmark(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        for _ in range(warmup):
+            self.forward(x)
+        import time
+        start = time.perf_counter()
+        for _ in range(iters):
+            self.forward(x)
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
+
     def regularization_loss(self, regularize_activation: float = 1.0, regularize_entropy: float = 1.0) -> float:
         l1 = np.mean(np.abs(self.spline_U @ self.spline_V), axis=-1)
         reg_l1 = float(np.sum(l1))

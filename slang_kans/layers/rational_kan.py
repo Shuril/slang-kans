@@ -76,12 +76,9 @@ class RationalKANLinear(SlangKANLayerBase):
             if self._buf_p is None or self._kernel is None:
                 self._sync_gpu_weights()
 
-            buf_x = dev.create_buffer(data=x_arr, usage=slangpy.BufferUsage.shader_resource)
-            out_arr = np.zeros((B, D_out), dtype=np.float32)
-            buf_out = dev.create_buffer(
-                data=out_arr,
-                usage=slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access
-            )
+            buf_x = self._get_buffer("x", B * D_in * 4, slangpy.BufferUsage.shader_resource)
+            buf_x.copy_from_numpy(x_arr)
+            buf_out = self._get_buffer("out", B * D_out * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
 
             self._kernel.dispatch(
                 thread_count=[B, D_out, 1],
@@ -97,7 +94,7 @@ class RationalKANLinear(SlangKANLayerBase):
                 q_degree=self.q_degree
             )
             dev.wait_for_idle()
-            out = buf_out.to_numpy().view(np.float32).reshape(B, D_out)
+            out = buf_out.to_numpy().view(np.float32)[:B * D_out].reshape(B, D_out)
             return out[0] if is_1d else out
 
         # CPU Fallback via Clenshaw
@@ -131,6 +128,69 @@ class RationalKANLinear(SlangKANLayerBase):
             out += self.bias[None, :]
 
         return out[0] if is_1d else out
+
+    def _benchmark_gpu(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        dev = self.mgr.device
+        x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float32))
+        if x_arr.ndim == 1:
+            x_arr = x_arr.reshape(1, -1)
+        B, D_in = x_arr.shape
+        D_out = self.out_features
+
+        if self._buf_p is None or self._kernel is None:
+            self._sync_gpu_weights()
+
+        buf_x = self._get_buffer("x", B * D_in * 4, slangpy.BufferUsage.shader_resource)
+        buf_x.copy_from_numpy(x_arr)
+        buf_out = self._get_buffer("out", B * D_out * 4, slangpy.BufferUsage.shader_resource | slangpy.BufferUsage.unordered_access)
+
+        for _ in range(warmup):
+            self._kernel.dispatch(
+                thread_count=[B, D_out, 1],
+                output=buf_out,
+                input=buf_x,
+                p_weights=self._buf_p,
+                q_weights=self._buf_q,
+                bias=self._buf_b,
+                batch_size=B,
+                in_features=D_in,
+                out_features=D_out,
+                p_degree=self.p_degree,
+                q_degree=self.q_degree
+            )
+        dev.wait_for_idle()
+
+        import time
+        start = time.perf_counter()
+        for _ in range(iters):
+            self._kernel.dispatch(
+                thread_count=[B, D_out, 1],
+                output=buf_out,
+                input=buf_x,
+                p_weights=self._buf_p,
+                q_weights=self._buf_q,
+                bias=self._buf_b,
+                batch_size=B,
+                in_features=D_in,
+                out_features=D_out,
+                p_degree=self.p_degree,
+                q_degree=self.q_degree
+            )
+        dev.wait_for_idle()
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
+
+    def benchmark(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        if self.use_gpu and self.mgr.is_gpu_available():
+            return self._benchmark_gpu(x, warmup, iters)
+        import time
+        for _ in range(warmup):
+            self.forward(x)
+        start = time.perf_counter()
+        for _ in range(iters):
+            self.forward(x)
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
 
     def regularization_loss(self, regularize_activation: float = 1.0, regularize_entropy: float = 1.0) -> float:
         l1 = np.mean(np.abs(self.p_weights), axis=-1)

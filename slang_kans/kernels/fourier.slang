@@ -75,3 +75,28 @@ public void fourier_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_fourier_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int num_frequencies
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x_val = input[b * in_features + din];
+    int num_bases = 2 * num_frequencies + 1;
+    uint out_offset = b * (in_features * num_bases) + din * num_bases;
+
+    phi[out_offset + 0] = 1.0f;
+    for (int k = 1; k <= num_frequencies; k++) {
+        float arg = (float)k * PI * x_val;
+        phi[out_offset + k]                   = cos(arg);
+        phi[out_offset + num_frequencies + k] = sin(arg);
+    }
+}

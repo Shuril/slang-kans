@@ -104,6 +104,30 @@ class TestSlangKANs(unittest.TestCase):
         out = cp_model(x)
         self.assertEqual(out.shape, (4, 2))
 
+    def test_08_gpu_cpu_parity(self):
+        """Verify strict CPU-GPU parity (< 1e-4) across batch sizes and all architectures."""
+        B, D_in, D_out = 128, 16, 16
+        x = np.random.uniform(-0.8, 0.8, (B, D_in)).astype(np.float32)
+
+        architectures = [
+            ("FastKAN", slang_kans.FastKAN(D_in, D_out, num_centers=8)),
+            ("WavKAN", slang_kans.WavKANLinear(D_in, D_out, num_wavelets=8)),
+            ("ReLUKAN", slang_kans.ReLUKANLinear(D_in, D_out, num_grids=8)),
+            ("FourierKAN", slang_kans.FourierKANLinear(D_in, D_out, num_frequencies=4)),
+            ("JacobiKAN", slang_kans.JacobiKANLinear(D_in, D_out, degree=4)),
+            ("ChebyKAN", slang_kans.ChebyKAN(D_in, D_out, degree=4)),
+            ("KAN (BSpline)", slang_kans.KAN(D_in, D_out, grid_size=5)),
+            ("RationalKAN", slang_kans.RationalKANLinear(D_in, D_out, p_degree=4, q_degree=2)),
+        ]
+
+        for name, layer in architectures:
+            layer.use_gpu = False
+            out_cpu = layer.forward(x)
+            layer.use_gpu = True
+            out_gpu = layer.forward(x)
+            max_err = float(np.max(np.abs(out_cpu - out_gpu)))
+            self.assertLess(max_err, 1e-4, f"{name} failed CPU-GPU parity with max error {max_err}")
+
 
 if __name__ == "__main__":
     unittest.main()

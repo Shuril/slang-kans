@@ -75,6 +75,16 @@ class MultKANLinear(SlangKANLayerBase):
 
         return out[0] if is_1d else out
 
+    def benchmark(self, x: np.ndarray, warmup: int = 10, iters: int = 50) -> float:
+        for _ in range(warmup):
+            self.forward(x)
+        import time
+        start = time.perf_counter()
+        for _ in range(iters):
+            self.forward(x)
+        end = time.perf_counter()
+        return (end - start) / iters * 1000.0
+
 
 class MultKAN:
     """Multi-layer MultKAN Network."""

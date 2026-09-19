@@ -130,3 +130,31 @@ public void cheby_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_cheby_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int num_bases
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x = clamp(input[b * in_features + din], -1.0f, 1.0f);
+    uint out_offset = b * (in_features * num_bases) + din * num_bases;
+
+    phi[out_offset + 0] = 1.0f;
+    if (num_bases > 1) phi[out_offset + 1] = x;
+    float t_prev2 = 1.0f;
+    float t_prev1 = x;
+    for (int k = 2; k < num_bases; k++) {
+        float t_curr = 2.0f * x * t_prev1 - t_prev2;
+        phi[out_offset + k] = t_curr;
+        t_prev2 = t_prev1;
+        t_prev1 = t_curr;
+    }
+}

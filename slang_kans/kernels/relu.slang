@@ -81,3 +81,29 @@ public void relu_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_relu_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int num_grids,
+    uniform float grid_min,
+    uniform float grid_max
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x_val = input[b * in_features + din];
+    float h = (grid_max - grid_min) / max((float)(num_grids - 1), 1.0f);
+    float inv_h = 1.0f / max(h, 1e-6f);
+    uint out_offset = b * (in_features * num_grids) + din * num_grids;
+
+    for (int c = 0; c < num_grids; c++) {
+        float center = grid_min + (float)c * h;
+        phi[out_offset + c] = relu_tent_basis(x_val, center, inv_h);
+    }
+}

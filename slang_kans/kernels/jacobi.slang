@@ -99,3 +99,27 @@ public void jacobi_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_jacobi_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int degree,
+    uniform float alpha,
+    uniform float beta
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x_val = input[b * in_features + din];
+    float bases[16];
+    compute_jacobi_bases(x_val, degree, alpha, beta, bases);
+    uint out_offset = b * (in_features * degree) + din * degree;
+    for (int d = 0; d < degree; d++) {
+        phi[out_offset + d] = bases[d];
+    }
+}

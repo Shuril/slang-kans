@@ -95,3 +95,30 @@ public void wavelet_kan_forward(
     if (j_base + 2 < (uint)out_features) output[b * out_features + j_base + 2] = acc2;
     if (j_base + 3 < (uint)out_features) output[b * out_features + j_base + 3] = acc3;
 }
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+public void eval_wavelet_basis(
+    uint3 threadId : SV_DispatchThreadID,
+    uniform RWStructuredBuffer<float> phi,
+    uniform StructuredBuffer<float> input,
+    uniform StructuredBuffer<float> translations,
+    uniform StructuredBuffer<float> scales,
+    uniform int batch_size,
+    uniform int in_features,
+    uniform int num_wavelets,
+    uniform int wavelet_type
+) {
+    uint b = threadId.x;
+    uint din = threadId.y;
+    if (b >= (uint)batch_size || din >= (uint)in_features) return;
+    float x = input[b * in_features + din];
+    uint param_offset = din * num_wavelets;
+    uint out_offset = b * (in_features * num_wavelets) + din * num_wavelets;
+
+    for (int w = 0; w < num_wavelets; w++) {
+        float tr = translations[param_offset + w];
+        float sc = scales[param_offset + w];
+        phi[out_offset + w] = eval_wavelet(x, tr, sc, wavelet_type);
+    }
+}
